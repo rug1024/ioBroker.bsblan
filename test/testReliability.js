@@ -301,6 +301,20 @@ describe("BSB metadata and values", () => {
 });
 
 describe("Adapter polling and connection state", () => {
+    it("initializes offline silently before the first request", async () => {
+        const a = adapter();
+        a.subscribeStates = sinon.spy();
+        sinon.stub(a, "migrateExistingObjects").resolves();
+        sinon.stub(a, "updateNativeData").resolves();
+        sinon.stub(a, "setupDefaultObjects").resolves();
+        sinon.stub(a, "update").resolves();
+        await a.onReady();
+        assert.deepEqual(a.setState.args, [["info.connection", false, true]]);
+        sinon.assert.notCalled(a.log.error);
+        a.connectionHandler(true);
+        assert.deepEqual(a.setState.lastCall.args, ["info.connection", true, true]);
+    });
+
     function pollingAdapter() {
         const a = adapter();
         a.values = ["8740"];

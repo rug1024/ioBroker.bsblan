@@ -39,7 +39,9 @@ class Bsblan extends utils.Adapter {
             this.interval = 10000;
         }
 
-        this.connectionHandler(false);
+        // Reset a persisted connection state without reporting a failed request.
+        this.connection = false;
+        this.setState("info.connection", false, true);
         this.values = this.resolveConfigValues();
 
         await this.migrateExistingObjects();
