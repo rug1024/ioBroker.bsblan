@@ -201,6 +201,7 @@
     "platform": "Javascript/Node.js",
     "icon": "bsblan.png",
     "enabled": true,
+    "disableDataReporting": true,
     "extIcon": "https://raw.githubusercontent.com/hacki11/ioBroker.bsblan/master/admin/bsblan.png",
     "readme": "https://github.com/hacki11/ioBroker.bsblan/blob/master/README.md",
     "loglevel": "info",

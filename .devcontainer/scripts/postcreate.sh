@@ -18,7 +18,7 @@ echo "➡️  Disable error reporting"
 iob plugin disable sentry
 
 echo "➡️  Disable sending diagnostics"
-iob object set system.config common.diag=false
+iob object set system.config common.diag=none
 
 echo "➡️  Set the license as confirmed"
 iob object set system.config common.licenseConfirmed=true

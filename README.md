@@ -78,6 +78,20 @@ die Temperaturen oder Brennerzustände auswerten, vor dem Vergleich `state.val !
 und die Qualität prüfen. Ein echter Wert 0 bleibt gültig. Die Metadaten werden standardmäßig
 fünf Minuten zwischengespeichert; aktuelle Messwerte werden weiterhin regulär abgefragt.
 
+## Error reporting
+
+This adapter has no Sentry dependency or Sentry plugin configuration. Data reporting
+is explicitly disabled for the adapter with `common.disableDataReporting`.
+
+The separate ioBroker controller installed by the integration-test harness can include
+Sentry as its own dependency. Local integration tests set `CI=true` **before** loading
+the harness, so installation/setup and all child processes inherit the controller's
+supported Sentry opt-out. The development container also sets this flag before startup
+and disables system diagnostics. No Sentry release integration is configured.
+
+These repository settings do not change the global configuration of an existing
+ioBroker installation or remove dependencies owned by its controller.
+
 ## Writing Values
 - Activate all or specific IDs as Writable in 
   * en: [Readonly or read/write access](https://1coderookie.github.io/BSB-LPB-LAN_EN/chap05.html)
@@ -91,15 +105,9 @@ fünf Minuten zwischengespeichert; aktuelle Messwerte werden weiterhin regulär 
 <!--
     Placeholder for the next version (at the beginning of the line):
     ### **WORK IN PROGRESS**
-- Fix request serialization, overlapping polling and shutdown scheduling.
-- Add configurable HTTP timeout/batch size, endpoint diagnostics and expiring metadata caches.
-- Correct average parameter counting, metadata migration and read-only detection.
-- Represent unavailable measurements as null with error quality; restore quality on valid data.
-- Update connection status only on communication results, preserve parameter destinations and avoid automatic write retries.
-- Await object initialization and load the ESM queue using dynamic import.
-- Add regression tests including local HTTP concurrency, timeout and recovery tests.
 -->
 ### **WORK IN PROGRESS**
+- Disable data reporting and controller Sentry during local integration tests and development-container startup; remove the unused Sentry release template.
 - Fix request serialization, overlapping polling and shutdown scheduling.
 - Add configurable HTTP timeout/batch size, endpoint diagnostics and expiring metadata caches.
 - Correct average parameter counting, metadata migration and read-only detection.

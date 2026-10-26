@@ -9,6 +9,8 @@ services:
         volumes:
             - ..:/workspace:cached
         environment:
+            # Disable controller Sentry before its first startup/setup.
+            - CI=true
             # using non-default ports to not interfere with integration tests
             - IOB_OBJECTSDB_TYPE=jsonl
             - IOB_OBJECTSDB_HOST=127.0.0.1
