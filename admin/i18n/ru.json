@@ -1,0 +1,6 @@
+{
+    "bsblan adapter settings": "Настройки адаптера для bsblan",
+    "Request timeout [s]": "Тайм-аут запроса [с]",
+    "Parameters per request": "Параметров на запрос",
+    "Metadata cache [s] (0 = disabled)": "Кэш метаданных [с] (0 = выключен)"
+}

@@ -1,5 +1,5 @@
 const {expect} = require("chai");
-const { describe, it } = require("node:test");
+const { describe, it } = require("mocha");
 const BSB = require(__dirname + "/../lib/bsb");
 const bsbutils = require(__dirname + "/../lib/bsb_utils");
 

@@ -235,7 +235,10 @@
     "user": "",
     "password": "",
     "values": "700",
-    "interval": "10"
+    "interval": "10",
+    "requestTimeout": 15,
+    "batchSize": 30,
+    "metadataCacheSeconds": 300
   },
   "objects": [],
   "instanceObjects": [

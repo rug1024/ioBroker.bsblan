@@ -29,6 +29,55 @@ The BSB_LAN Interface brings the BSB (Boiler System Bus) to LAN. This adapter co
     - Poll interval in seconds (10 is minimum)
     - IDs which should be polled or changed (comma- or newline separated, see Webinterface of BSB_LAN for available ids)
 
+## Request reliability and settings
+
+All HTTP requests from one adapter instance, including writes and parameter batches,
+use one serial queue. The next polling cycle starts after the previous cycle finishes
+and the configured polling interval elapses.
+
+| Setting | Default | Allowed values | Purpose |
+| --- | --- | --- | --- |
+| Request timeout [s] | 15 | 1–300 | HTTP timeout per attempt. Read requests have at most two attempts, with a one-second pause. |
+| Parameters per request | 30 | 1–30 | Maximum number of parameters in a `/JQ` or `/JC` request. Smaller batches can help with slow responses. |
+| Metadata cache [s] | 300 | 0–86400 | Cache lifetime for API version and the number of configured 24-hour averages. Set 0 to disable caching. |
+
+Existing installations use these defaults when the new settings are absent. Invalid
+settings also fall back to the defaults. A restart clears the metadata cache; otherwise
+changes to average configuration become visible after its lifetime expires. Live
+measurements are never served from this cache.
+
+Failed HTTP requests log the method, endpoint, elapsed time, error code and configured
+timeout, without dumping authentication headers. `info.connection` becomes true only
+after a successful response; local processing/database errors and rejected parameter
+writes do not incorrectly mark the device as disconnected.
+
+**Unavailable measurements:** `---`, missing values and invalid numeric values are stored
+as `null` with ioBroker quality flag `q = 0x01`, rather than a fabricated zero. Valid
+measurements, including real zero values, reset `q` to 0. Scripts consuming these states
+must check for `null`/quality before numeric comparisons (JavaScript coerces `null` to 0).
+This applies to both live values and 24-hour averages.
+
+Writes are sent once: a timeout cannot prove that the heating controller did not apply
+the value, so the adapter does not automatically repeat the write. The configured
+`!destination` suffix is preserved for initialization, writes and readback. Firmware
+write permissions are still authoritative.
+
+On shutdown the adapter stops polling and refuses queued HTTP operations. An already
+running HTTP operation may finish (including its bounded read retry); no new polling
+cycle is scheduled.
+
+### Hinweise auf Deutsch
+
+Die neuen Einstellungen stehen in der Adapterkonfiguration zur Verfügung. Zunächst
+können die bisherigen Werte (15 Sekunden, 30 Parameter) beibehalten werden. Falls noch
+Timeouts auftreten, zeigen die Fehlermeldungen jetzt den betroffenen Endpunkt und die
+Dauer; Paketgröße und Timeout lassen sich dann gezielt anpassen.
+
+Fehlende Messwerte liefern jetzt **`null` mit Fehlerqualität**, nicht mehr 0. Bei Skripten,
+die Temperaturen oder Brennerzustände auswerten, vor dem Vergleich `state.val !== null`
+und die Qualität prüfen. Ein echter Wert 0 bleibt gültig. Die Metadaten werden standardmäßig
+fünf Minuten zwischengespeichert; aktuelle Messwerte werden weiterhin regulär abgefragt.
+
 ## Writing Values
 - Activate all or specific IDs as Writable in 
   * en: [Readonly or read/write access](https://1coderookie.github.io/BSB-LPB-LAN_EN/chap05.html)
@@ -42,8 +91,22 @@ The BSB_LAN Interface brings the BSB (Boiler System Bus) to LAN. This adapter co
 <!--
     Placeholder for the next version (at the beginning of the line):
     ### **WORK IN PROGRESS**
+- Fix request serialization, overlapping polling and shutdown scheduling.
+- Add configurable HTTP timeout/batch size, endpoint diagnostics and expiring metadata caches.
+- Correct average parameter counting, metadata migration and read-only detection.
+- Represent unavailable measurements as null with error quality; restore quality on valid data.
+- Update connection status only on communication results, preserve parameter destinations and avoid automatic write retries.
+- Await object initialization and load the ESM queue using dynamic import.
+- Add regression tests including local HTTP concurrency, timeout and recovery tests.
 -->
 ### **WORK IN PROGRESS**
+- Fix request serialization, overlapping polling and shutdown scheduling.
+- Add configurable HTTP timeout/batch size, endpoint diagnostics and expiring metadata caches.
+- Correct average parameter counting, metadata migration and read-only detection.
+- Represent unavailable measurements as null with error quality; restore quality on valid data.
+- Update connection status only on communication results, preserve parameter destinations and avoid automatic write retries.
+- Await object initialization and load the ESM queue using dynamic import.
+- Add regression tests including local HTTP concurrency, timeout and recovery tests.
 - (copilot) Adapter requires node.js >= 22 now
 
 ### 1.0.0 (2026-02-28)

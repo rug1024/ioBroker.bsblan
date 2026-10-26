@@ -1,0 +1,6 @@
+{
+    "bsblan adapter settings": "Impostazioni dell'adattatore per bsblan",
+    "Request timeout [s]": "Timeout per richiesta [s]",
+    "Parameters per request": "Parametri per richiesta",
+    "Metadata cache [s] (0 = disabled)": "Cache dei metadati [s] (0 = disattivata)"
+}

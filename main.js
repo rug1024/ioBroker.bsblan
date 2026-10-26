@@ -20,6 +20,9 @@ class Bsblan extends utils.Adapter {
             ...options,
             name: "bsblan",
         });
+        this.values = [];
+        this.stopping = false;
+        this.updating = false;
         this.on("ready", this.onReady.bind(this));
         this.on("stateChange", this.onStateChange.bind(this));
         this.on("unload", this.onUnload.bind(this));
@@ -36,6 +39,7 @@ class Bsblan extends utils.Adapter {
             this.interval = 10000;
         }
 
+        this.connectionHandler(false);
         this.values = this.resolveConfigValues();
 
         await this.migrateExistingObjects();
@@ -51,7 +55,7 @@ class Bsblan extends utils.Adapter {
 
     getBSB() {
         if (!this.bsb) {
-            this.bsb = new BSB(this.config.host, this.config.user, this.config.password);
+            this.bsb = new BSB(this.config.host, this.config.user, this.config.password, this.config);
         }
         return this.bsb;
     }
@@ -93,30 +97,41 @@ class Bsblan extends utils.Adapter {
     }
 
     async update() {
-        this.log.debug("Update default states ...");
-        await this.updateDefaultStates().catch(error => {
-            this.errorHandler(error);
-            this.refreshTimer();
-        });
+        if (this.stopping || this.updating) {
+            return;
+        }
+        this.updating = true;
+        try {
+            this.log.debug("Update default states ...");
+            await this.updateDefaultStates().catch(error => this.errorHandler(error));
 
-        this.log.debug("Update parameters ...");
-        await this.detectNewObjects(this.values)
-            .then(newValues => this.initializeParameters(newValues))
-            .then(() => this.connectionHandler(true))
-            .then(() => this.getBSB().getParameter(this.values))
-            .then(result => this.setStates(result))
-            .then(() => this.getBSB().query24hAverages())
-            .then(result24h => this.set24hAverages(result24h))
-            .then(() => this.refreshTimer())
-            .catch(error => {
-                this.errorHandler(error);
-                this.refreshTimer();
-            });
+            this.log.debug("Update parameters ...");
+            const newValues = await this.detectNewObjects(this.values);
+            await this.initializeParameters(newValues);
+            if (this.stopping) {
+                return;
+            }
+            const result = await this.getBSB().getParameter(this.values);
+            if (this.values.length > 0) {
+                this.connectionHandler(true);
+            }
+            await this.setStates(result);
+            const averages = await this.getBSB().query24hAverages();
+            await this.set24hAverages(averages);
+        } catch (error) {
+            this.errorHandler(error);
+        } finally {
+            this.updating = false;
+            this.refreshTimer();
+        }
     }
 
     refreshTimer() {
-        this.log.debug("Reset Timer");
-        this.timer = setTimeout(() => this.update(), this.interval);
+        clearTimeout(this.timer);
+        if (!this.stopping) {
+            this.log.debug("Reset Timer");
+            this.timer = setTimeout(() => this.update(), this.interval);
+        }
     }
 
     /**
@@ -126,35 +141,28 @@ class Bsblan extends utils.Adapter {
      * @param {ioBroker.State | null | undefined} state
      */
     async onStateChange(id, state) {
-        if (state) {
-            // The state was changed
-            if (this.bsb && state && !state.ack) {
-                this.log.info(`Sending write request for ${id} (value: ${state.val})`);
-
-                this.getObjectAsync(id)
-                    .then(obj => {
-                        if (obj && obj.native && obj.native.bsb) {
-                            return this.getBSB().write(obj.native.id, state.val, obj.native.bsb.dataType);
-                        }
-                        this.log.error(`Error getting BSB native information from: ${id}`);
-                    })
-                    .then(response => {
-                        this.log.debug(`Received write response: ${JSON.stringify(response)}`);
-                        return this.getBSB().getParameter(Object.keys(response));
-                    })
-                    .then(result => this.setStates(result))
-                    .catch(error => {
-                        if (error.name === "BSBWriteError") {
-                            this.log.error(`Error writing value: ${error.message}`);
-                            // ignore
-                        } else {
-                            this.errorHandler(error);
-                        }
-                    });
+        if (this.stopping || !state || state.ack || !this.bsb) {
+            return;
+        }
+        try {
+            const obj = await this.getObjectAsync(id);
+            if (!obj?.native?.bsb || !obj.common.write || obj.native.avg) {
+                this.log.warn(`Ignoring write to non-writable state: ${id}`);
+                return;
             }
-        } else {
-            // The state was deleted
-            this.log.info(`state ${id} deleted`);
+            // native.id omits the destination; preserve a configured !address when writing.
+            const parameter = this.values.find(value => this.getBSB().getId(value) === obj.native.id);
+            if (!parameter) {
+                this.log.warn(`Ignoring write to unconfigured parameter: ${id}`);
+                return;
+            }
+            this.log.info(`Sending write request for ${id} (value: ${state.val})`);
+            await this.getBSB().write(parameter, state.val, obj.native.bsb.dataType);
+            this.connectionHandler(true);
+            const result = await this.getBSB().getParameter([parameter]);
+            await this.setStates(result);
+        } catch (error) {
+            this.errorHandler(error);
         }
     }
 
@@ -210,31 +218,25 @@ class Bsblan extends utils.Adapter {
         }
     }
 
-    detectNewObjects(values) {
-        // native.id stores the id without the address, so we need also to use only the part without the address
-        const newValues = new Set();
-        values.map(value => newValues.add(this.getBSB().getId(value)));
-        return this.getAdapterObjectsAsync().then(records => {
-            for (const key of Object.keys(records)) {
-                if (records[key].native) {
-                    const id = records[key].native.id;
-                    if (newValues.has(id)) {
-                        newValues.delete(id);
-                    }
-                }
-            }
-            return newValues;
-        });
+    async detectNewObjects(values) {
+        const records = await this.getAdapterObjectsAsync();
+        const existingIds = new Set(
+            Object.values(records)
+                .filter(obj => obj.native?.bsb && !obj.native.avg)
+                .map(obj => obj.native.id),
+        );
+        // Keep destination suffixes for the initialization queries as well.
+        return new Set(values.filter(value => !existingIds.has(this.getBSB().getId(value))));
     }
 
-    setupCategory(category, params, values) {
+    async setupCategory(category, params, values) {
         const name = `${category.native["name"]} (${category.native["min"]} - ${category.native["max"]})`;
         this.log.info(`Setup category ${category.id}: ${name}`);
         const createdValues = new Set();
         for (const value of category.values) {
             const id = this.getBSB().getId(value);
-            if (id in params) {
-                this.setupObject(id, params[id], values[id]).catch(error => this.errorHandler(error));
+            if (id in params && values[id]) {
+                await this.setupObject(id, params[id], values[id]);
                 createdValues.add(value);
             }
         }
@@ -245,7 +247,7 @@ class Bsblan extends utils.Adapter {
         this.log.info("Fetch device information ...");
         await this.getBSB()
             .queryInfo()
-            .then(info => InfoObjects.map(object => this.setupDefaultObject(object, info)))
+            .then(info => Promise.all(InfoObjects.map(object => this.setupDefaultObject(object, info))))
             .catch(error => this.errorHandler(error));
     }
 
@@ -266,11 +268,16 @@ class Bsblan extends utils.Adapter {
     async updateDefaultStates() {
         await this.getBSB()
             .queryInfo()
-            .then(info => this.setDefaultStates(info))
-            .catch(error => this.errorHandler(error));
+            .then(info => {
+                this.connectionHandler(true);
+                return this.setDefaultStates(info);
+            });
     }
 
     async setDefaultStates(info) {
+        if (this.stopping) {
+            return;
+        }
         for (const object of InfoObjects) {
             const name = `info.${object.id}`;
             if (Object.hasOwnProperty.call(info, object.id)) {
@@ -284,6 +291,9 @@ class Bsblan extends utils.Adapter {
     }
 
     async setupObject(key, param, value) {
+        if (this.stopping) {
+            return;
+        }
         const name = `${param.name} (${key})`;
 
         this.log.info(`Add Parameter: ${name}`);
@@ -317,14 +327,9 @@ class Bsblan extends utils.Adapter {
         }
 
         // @ts-expect-error "unclear why obj should not be the right type"
-        await this.setObjectNotExistsAsync(this.createId(key, param.name), obj)
-            .then(() =>
-                this.setStateAsync(this.createId(key, param.name), {
-                    val: this.parseValue(value.value, value.dataType),
-                    ack: true,
-                }),
-            )
-            .catch(error => this.errorHandler(error));
+        await this.setObjectNotExistsAsync(this.createId(key, param.name), obj).then(() =>
+            this.setStateAsync(this.createId(key, param.name), this.parameterState(value)),
+        );
     }
 
     async set24hAvgObject(key, param) {
@@ -359,16 +364,14 @@ class Bsblan extends utils.Adapter {
 
         // @ts-expect-error "unclear why obj should not be the right type"
         await this.setObjectNotExistsAsync(`24h.${this.createId(key, param.name)}`, obj)
-            .then(() =>
-                this.setStateAsync(`24h.${this.createId(key, param.name)}`, {
-                    val: this.parseValue(param.value, param.dataType),
-                    ack: true,
-                }),
-            )
+            .then(() => this.setStateAsync(`24h.${this.createId(key, param.name)}`, this.parameterState(param)))
             .catch(error => this.errorHandler(error));
     }
 
     async set24hAverages(data) {
+        if (this.stopping) {
+            return;
+        }
         this.log.debug(`/JA Response: ${JSON.stringify(data)}`);
 
         for (const key of Object.keys(data)) {
@@ -376,14 +379,23 @@ class Bsblan extends utils.Adapter {
         }
     }
 
-    setStates(data) {
+    async setStates(data) {
+        if (this.stopping) {
+            return;
+        }
         this.log.debug(`/JQ Response: ${JSON.stringify(data)}`);
         for (const key of Object.keys(data)) {
-            this.setStateAsync(this.createId(key, data[key].name), {
-                val: this.parseValue(data[key].value, data[key].dataType),
-                ack: true,
-            }).catch(error => this.errorHandler(error));
+            await this.setStateAsync(this.createId(key, data[key].name), this.parameterState(data[key]));
         }
+    }
+
+    /**
+     * @param parameter
+     * @returns {ioBroker.SettableState} A value with explicit validity and acknowledgement.
+     */
+    parameterState(parameter) {
+        const val = this.parseValue(parameter.value, parameter.dataType);
+        return { val, ack: true, q: val === null ? 0x01 : 0 };
     }
 
     createId(key, name) {
@@ -424,46 +436,50 @@ class Bsblan extends utils.Adapter {
     }
 
     parseValue(value, type) {
+        if (value === null || value === undefined || value === "---") {
+            return null;
+        }
         switch (type) {
             case 0: // number
-            case 1: // enum
-                // BSB_LAN returns --- for numbers
-                // https://github.com/fredlcore/BSB-LAN/issues/469
-                if (value == "---") {
-                    return 0;
+            case 1: {
+                // enum
+                if (String(value).trim() === "") {
+                    return null;
                 }
-                return parseFloat(value);
-            default: // no conversion
+                const number = Number(value);
+                return Number.isFinite(number) ? number : null;
+            }
+            default:
                 return value;
         }
     }
 
     parseUnit(unit) {
-        return unit.replace("&deg;", "°").replace("&#037;", "%").replace("&#181;", "u"); // micro
+        return String(unit ?? "")
+            .replace("&deg;", "°")
+            .replace("&#037;", "%")
+            .replace("&#181;", "u"); // micro
     }
 
     async migrateExistingObjects() {
-        await this.getAdapterObjectsAsync().then(objects => {
-            for (const id in objects) {
-                const obj = objects[id];
-                if (obj.native && obj.native.bsb) {
-                    this.fixReadWrite(obj);
-                    this.fixEmptyStates(obj);
-                    this.extendObject(id, obj);
-                    this.warnInvalidCharacters(obj);
-                    this.fixDataType(obj);
-                }
+        const objects = await this.getAdapterObjectsAsync();
+        for (const [id, obj] of Object.entries(objects)) {
+            if (obj.native?.bsb) {
+                this.fixReadWrite(obj);
+                this.fixEmptyStates(obj);
+                this.fixDataType(obj);
+                await this.extendObjectAsync(id, obj);
+                this.warnInvalidCharacters(obj);
             }
-        });
+        }
     }
 
     fixReadWrite(obj) {
-        // not needed for objects created from V1 firmware
-        if ("bsb" in obj.native && "readonly" in obj.native.bsb) {
-            return;
-        }
-
-        const rw = this.getBSB().isReadWrite(obj.native.id);
+        const rw = obj.native.avg
+            ? false
+            : "readonly" in obj.native.bsb
+              ? obj.native.bsb.readonly === 0
+              : this.getBSB().isReadWrite(obj.native.id);
         if (rw !== obj.common.write) {
             this.log.info(`Migrate ${obj._id}: set write = ${rw}`);
             obj.common.write = rw;
@@ -507,7 +523,7 @@ class Bsblan extends utils.Adapter {
         Object.values(objects)
             .filter(obj => obj.native)
             .filter(obj => obj.native.id)
-            .filter(obj => !this.getBSB().validateParameterId(obj.native.id))
+            .filter(obj => !obj.native.avg && this.getBSB().validateParameterId(obj.native.id))
             .map(obj => (ids[obj.native.id] = obj));
 
         // fetch parameter definitions (bsb_lan > 2.x)
@@ -521,7 +537,9 @@ class Bsblan extends utils.Adapter {
                 // check if the object has a definition available
                 if (bsb_id in defs) {
                     // update native data
-                    obj.native.bsb = defs[bsb_id];
+                    obj.native.bsb = { ...obj.native.bsb, ...defs[bsb_id] };
+                    this.fixReadWrite(obj);
+                    this.fixDataType(obj);
                     await this.setObjectAsync(obj._id, obj);
                 }
             }
@@ -529,15 +547,20 @@ class Bsblan extends utils.Adapter {
     }
 
     errorHandler(error) {
+        if (this.stopping || error.name === "BSBStoppedError") {
+            return;
+        }
         this.log.error(error.message);
         if (error.stack) {
             this.log.error(error.stack);
         }
-        this.connectionHandler(false);
+        if (error.name === "BSBRequestError") {
+            this.connectionHandler(false);
+        }
     }
 
     connectionHandler(connected) {
-        if (this.connection !== connected) {
+        if (!this.stopping && this.connection !== connected) {
             this.connection = connected;
             if (connected) {
                 this.log.info("Connection established successfully");
@@ -556,7 +579,9 @@ class Bsblan extends utils.Adapter {
      */
     onUnload(callback) {
         try {
+            this.stopping = true;
             clearTimeout(this.timer);
+            this.bsb?.close();
             this.log.info("cleaned everything up...");
             callback();
         } catch (e) {
